@@ -1,0 +1,17 @@
+.env
+__pycache__/
+.vscode/
+.venv/
+*.json
+.pytest_cache/
+
+# Implementation scripts - users must write their own
+*.py
+!intra42.py
+!test_intra42.py
+!examples/*.py
+
+# AI-generated documentation (keep only README.md in repo)
+.claude/
+*.md
+!README.md
