@@ -136,14 +136,6 @@ if project:
 
 See `examples/scraper_example.py` for a template.
 
-### Interactive Experimentation
-
-Use the Jupyter notebook for exploring HTML structure:
-
-```bash
-jupyter notebook scraper_experiment.ipynb
-```
-
 ## Architecture
 
 ### Core Components
@@ -153,8 +145,6 @@ jupyter notebook scraper_experiment.ipynb
   - `IntraScrape` - Web scraper for project subjects
 
 - **`test_intra42.py`** - Comprehensive test suite
-
-- **`scraper_experiment.ipynb`** - Interactive notebook for HTML exploration
 
 - **`examples/`** - Template scripts showing how to use the library
   - `scraper_example.py` - Template for custom implementations
@@ -178,7 +168,7 @@ from intra42 import IntraAPI
 api = IntraAPI('your_uid', 'your_secret')
 
 # Get user profile
-user = api.get('/v2/users/tfregni')
+user = api.get('/v2/users/<user>')
 
 # Get project details
 project = api.get('/v2/projects/1314')  # libft
@@ -261,7 +251,6 @@ pytest test_intra42.py --cov=intra42 --cov-report=html
 intra_42/
 ├── intra42.py              # Core library (IntraAPI + IntraScrape classes)
 ├── test_intra42.py         # Test suite
-├── scraper_experiment.ipynb # Interactive notebook for HTML exploration
 ├── examples/
 │   └── scraper_example.py  # Template for building your own scripts
 ├── requirements.txt        # Dependencies
