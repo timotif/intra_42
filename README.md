@@ -1,22 +1,21 @@
-# 42 Intra Archiver
+# 42 Intra Utilities
 
-A Python tool for archiving 42 school project subjects and campus data using both the official 42 Intra API and web scraping.
+Python utilities for accessing 42 school resources through the official API and web interface. Provides clean interfaces to both api.intra.42.fr (OAuth2) and projects.intra.42.fr (web scraping).
 
 ## Features
 
-- **OAuth2 API Client** - Access 42 Intra API (api.intra.42.fr) with automatic token management
-- **Web Scraper** - Download project subjects and attachments from projects.intra.42.fr
-- **Progress Tracking** - Beautiful nested progress bars with download speeds
-- **Graceful Interruption** - Ctrl+C handling for safe exits
-- **Smart Resume** - Skips already downloaded files
-- **Pagination Support** - Efficiently handles large datasets
+- **OAuth2 API Client** - Clean wrapper around the 42 Intra API with automatic token management
+- **Web Scraper** - Access project subjects and attachments from the projects website
+- **Pagination Support** - Efficiently handle large datasets with generator-based iteration
+- **Progress Tracking** - Optional progress bars for downloads
+- **Smart Downloads** - Automatic timeouts and context manager support
 
 ## Installation
 
 1. Clone the repository:
 ```bash
 git clone <your-repo-url>
-cd api_login
+cd intra_42
 ```
 
 2. Install dependencies:
@@ -71,11 +70,11 @@ CF_CLEARANCE_COOKIE=your-cf-clearance
 
 ## Usage
 
-**Important**: This repository provides the core classes (`IntraAPI` and `IntraScrape`) as libraries. Users must write their own scripts to use these tools. This ensures users understand what they're doing and take responsibility for their usage.
+**Important**: This repository provides core library classes only. Users must write their own implementation scripts. This ensures you understand what your code is doing and take responsibility for your usage.
 
 See `examples/` directory for templates and the sections below for usage patterns.
 
-### API Usage - Fetching Campus Data
+### API Usage - Fetching Data
 
 ```python
 from intra42 import IntraAPI
@@ -101,7 +100,7 @@ for user in api.get_paginated('/v2/campus/51/users'):
     print(user['login'])
 ```
 
-### Web Scraping Usage - Download Project Subjects
+### Web Scraping Usage - Accessing Projects
 
 ```python
 from intra42 import IntraScrape
@@ -120,18 +119,18 @@ scraper = IntraScrape(cookies)
 projects = scraper.get_projects()
 print(f"Found {len(projects)} projects")
 
-# Download attachments for a specific project
-for project in projects:
-    if project['name'] == 'libft':
-        attachments = scraper.get_project_attachments(project['url'])
-        for url in attachments:
-            filename = url.split('/')[-1]
-            scraper.download_attachment(url, f'downloads/{filename}')
+# Get attachments for a specific project
+project = next((p for p in projects if p['name'] == 'libft'), None)
+if project:
+    attachments = scraper.get_project_attachments(project['url'])
+    for url in attachments:
+        filename = url.split('/')[-1]
+        scraper.download_attachment(url, f'downloads/{filename}')
 ```
 
-**You must implement:**
+**Your implementation should include:**
 - Progress tracking (using `tqdm`)
-- Error handling
+- Error handling and retries
 - Rate limiting (add `time.sleep()` between requests)
 - Graceful interruption (signal handling)
 
@@ -158,7 +157,7 @@ jupyter notebook scraper_experiment.ipynb
 - **`scraper_experiment.ipynb`** - Interactive notebook for HTML exploration
 
 - **`examples/`** - Template scripts showing how to use the library
-  - `scraper_example.py` - Template for scraping implementation
+  - `scraper_example.py` - Template for custom implementations
 
 ### Authentication
 
@@ -222,12 +221,11 @@ scraper = IntraScrape(cookies)
 
 # Get all projects
 projects = scraper.get_projects()
-print(f"Found {len(projects)} projects")
 
 # Get attachments for a specific project
 attachments = scraper.get_project_attachments('/projects/42cursus-libft')
 
-# Download a file
+# Download files
 for url in attachments:
     filename = url.split('/')[-1]
     scraper.download_attachment(url, f'downloads/{filename}')
@@ -260,12 +258,12 @@ pytest test_intra42.py --cov=intra42 --cov-report=html
 ## Project Structure
 
 ```
-api_login/
+intra_42/
 ├── intra42.py              # Core library (IntraAPI + IntraScrape classes)
 ├── test_intra42.py         # Test suite
 ├── scraper_experiment.ipynb # Interactive notebook for HTML exploration
 ├── examples/
-│   └── scraper_example.py  # Template for building your own scraper
+│   └── scraper_example.py  # Template for building your own scripts
 ├── requirements.txt        # Dependencies
 ├── .env                    # Configuration (not in git, create from .env.example)
 ├── .env.example            # Configuration template
@@ -273,7 +271,7 @@ api_login/
 └── README.md               # This file
 ```
 
-**Note**: Implementation scripts are intentionally not included in the repository. Users must write their own scripts using the provided library classes. This ensures users understand the code they're running and take responsibility for their usage.
+**Note**: Implementation scripts are intentionally not included in the repository. Users must write their own scripts using the provided library classes. This ensures you understand the code you're running and take responsibility for your usage.
 
 ## Error Handling
 
@@ -296,15 +294,13 @@ The library classes provide basic error handling:
    ```python
    import time
    for project in projects:
-       scrape_project(project)
+       process_project(project)
        time.sleep(1)  # 1 second between requests
    ```
 
-2. **Cookie Refresh**: Session cookies expire - check if downloads start failing
+2. **Cookie Refresh**: Session cookies expire - re-extract if requests start failing
 
-3. **Incremental Scraping**: The scraper automatically skips existing files
-
-4. **Error Monitoring**: Check console output for failed projects
+3. **Error Handling**: Implement proper try/except blocks around network calls
 
 ## Troubleshooting
 
@@ -340,7 +336,7 @@ Find more: `api.get('/v2/campus')`
 
 ## Robots.txt Compliance
 
-This tool respects web scraping standards and has been verified against robots.txt:
+This library respects web scraping standards and has been verified against robots.txt:
 
 ### Compliance Status
 
@@ -349,22 +345,35 @@ This tool respects web scraping standards and has been verified against robots.t
 
 ### Responsible Usage
 
-While robots.txt permits scraping, this tool implements responsible practices:
+While robots.txt permits access, implement responsible practices:
 
-- **Authenticated Access**: Uses your personal session cookies (scraping content you have legitimate access to)
-- **Rate Limiting**: Built-in delays between requests to avoid overwhelming servers
-- **Graceful Interruption**: Proper Ctrl+C handling prevents incomplete/corrupted downloads
-- **Smart Resume**: Skips already downloaded files to minimize redundant requests
+- **Authenticated Access**: Uses your personal session cookies (accessing content you have legitimate access to)
+- **Rate Limiting**: Add delays between requests to avoid overwhelming servers
+- **Graceful Interruption**: Implement proper Ctrl+C handling
+- **Smart Resume**: Check if files exist before downloading
 - **Timeout Handling**: 30-second timeouts prevent hanging connections
 
 ### Ethical Considerations
 
-- **Purpose**: Personal archival of educational materials you have access to
-- **Scope**: Only downloads project subjects you're authorized to view
-- **Impact**: Minimal server load due to rate limiting and smart caching
-- **Transparency**: Open source tool with clear documentation
+- **Purpose**: Personal use of educational materials you have access to
+- **Scope**: Only access content you're authorized to view
+- **Impact**: Minimize server load with rate limiting
+- **Transparency**: Open source with clear documentation
 
-**Note**: robots.txt compliance does not supersede 42's Terms of Service. This tool is intended for personal, educational use by authorized 42 students.
+**Note**: robots.txt compliance does not supersede 42's Terms of Service. Use this library responsibly as an authorized 42 student.
+
+## Future Improvements
+
+Potential enhancements for the library:
+
+- **Logging System**: Replace `print()` statements with Python's `logging` module for better control
+- **Token Expiration Tracking**: Automatically refresh OAuth2 tokens before they expire
+- **Retry Logic**: Built-in exponential backoff for failed requests
+- **Session Persistence**: Save and restore session state
+- **Async Support**: Add async variants of API calls using `aiohttp`
+- **CLI Tool**: Command-line interface for common operations
+
+Contributions are welcome!
 
 ## Contributing
 
@@ -372,7 +381,7 @@ Feel free to submit issues or pull requests!
 
 ## Disclaimer
 
-This tool is for educational purposes and personal archival. Respect 42's terms of service and be considerate with your usage (rate limiting, etc.).
+This library is for educational purposes. Respect 42's terms of service and be considerate with your usage. Users are responsible for how they use these utilities.
 
 ## License
 
@@ -380,4 +389,4 @@ MIT License - See LICENSE file for details
 
 ## Author
 
-Created by a 42 Berlin student for archiving project subjects.
+Created by a 42 Berlin student to streamline access to 42 resources.
