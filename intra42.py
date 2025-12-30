@@ -1,5 +1,9 @@
+import os
 import requests
 from bs4 import BeautifulSoup
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+from email.utils import parsedate_to_datetime
 from tqdm import tqdm
 
 class IntraScrape:
@@ -14,15 +18,20 @@ class IntraScrape:
 		self.session = requests.Session()
 		self.session.cookies.update(cookies)
 		self.all_projects = []
+		self.projects_to_scrape = []
 		self.base_url = "https://projects.intra.42.fr"
 	
-	def _get_project_list(self):
+	def _get_project_list_page(self, page: int = 1):
 		"""
-		Helper method to retrieve the raw list of project items from the projects page.
+		Helper method to retrieve the raw list of project items from a single page.
+
+		Args:
+			page (int): Page number to retrieve (default: 1)
+
 		Returns:
 			list[BeautifulSoup Tag]: List of project item HTML elements
 		"""
-		url = self.base_url + "/projects/list"
+		url = f"{self.base_url}/projects/list?page={page}"
 		response = self.session.get(url)
 		if response.status_code != 200:
 			raise Exception(f"Failed to retrieve projects: {response.status_code}")
@@ -30,19 +39,108 @@ class IntraScrape:
 		# Use select_one() to find the first matching element
 		projects_ul = soup.select_one(self.SELECTORS['projects_list'])
 		if not projects_ul:
-			raise Exception("Projects list not found in the page")
+			return []
 		# Use select() to find all matching elements
 		project_items = projects_ul.select(self.SELECTORS['project_item'])
 		return project_items
 
-	def get_projects(self) -> list[dict]:
+	def _get_total_pages(self):
+		"""
+		Get the total number of pages by checking the pagination on the first page.
+
+		Returns:
+			int: Total number of pages
+		"""
+		url = f"{self.base_url}/projects/list"
+		response = self.session.get(url)
+		if response.status_code != 200:
+			raise Exception(f"Failed to retrieve projects: {response.status_code}")
+		soup = BeautifulSoup(response.text, 'html.parser')
+
+		# Find last page link: #projects-list-container > div > ul > li.last > a
+		last_page_link = soup.select_one('#projects-list-container > div > ul > li.last > a')
+		if last_page_link and last_page_link.get('href'):
+			# Extract page number from href like "/projects/list?page=17"
+			href = last_page_link['href']
+			if 'page=' in href:
+				return int(href.split('page=')[1].split('&')[0])
+
+		# Fallback: assume only 1 page
+		return 1
+
+	def _get_project_list(self, parallel: bool = True, max_workers: int = None):
+		"""
+		Helper method to retrieve all project items from all pages.
+
+		Args:
+			parallel (bool): Whether to fetch pages in parallel (default: True)
+			max_workers (int): Number of parallel threads. If None, uses min(32, cpu_count * 2).
+			                   Only used when parallel=True (default: None)
+
+		Returns:
+			list[BeautifulSoup Tag]: List of all project item HTML elements
+		"""
+		total_pages = self._get_total_pages()
+
+		if not parallel:
+			# Sequential fetching
+			print(f"Fetching {total_pages} pages sequentially...")
+			all_items = []
+			for page in range(1, total_pages + 1):
+				items = self._get_project_list_page(page)
+				all_items.extend(items)
+				print(f"Loaded page {page}/{total_pages}: {len(items)} projects")
+			print(f"Total projects loaded: {len(all_items)}")
+			return all_items
+
+		# Parallel fetching
+		if max_workers is None:
+			# For I/O-bound tasks (web scraping), use 2x CPU count, capped at 32
+			max_workers = min(32, (os.cpu_count() or 4) * 2)
+
+		print(f"Fetching {total_pages} pages in parallel with {max_workers} workers...")
+
+		with ThreadPoolExecutor(max_workers=max_workers) as executor:
+			results = list(executor.map(self._get_project_list_page, range(1, total_pages + 1)))
+
+		# Flatten results
+		all_items = []
+		for items in results:
+			all_items.extend(items)
+
+		print(f"Total projects loaded: {len(all_items)}")
+		return all_items
+
+	def get_projects_to_scrape(self, project_names: list[str], parallel: bool = True, max_workers: int = None) -> list[dict]:
+		"""
+		Filters and retrieves the list of projects to scrape based on provided names.
+		Args:
+			project_names (list[str]): List of project names to scrape
+			parallel (bool): Whether to fetch pages in parallel (default: True)
+			max_workers (int): Number of parallel threads (default: auto-detect)
+		Returns:
+			list[dict]: List of projects with 'name' and 'url' keys
+		"""
+		if not self.all_projects:
+			self.get_all_projects(parallel=parallel, max_workers=max_workers)
+		filtered_projects = [
+			proj for proj in self.all_projects
+			if proj['name'].lower() in (name.lower() for name in project_names)
+		]
+		self.projects_to_scrape = filtered_projects
+		return filtered_projects
+
+	def get_all_projects(self, parallel: bool = True, max_workers: int = None) -> list[dict]:
 		"""
 		Retrieves the list of projects from the 42 intra projects page.
+		Args:
+			parallel (bool): Whether to fetch pages in parallel (default: True)
+			max_workers (int): Number of parallel threads (default: auto-detect)
 		Returns:
 			list[dict]: List of projects with 'name' and 'url' keys
 		"""
 		all_projects = []
-		project_items = self._get_project_list()
+		project_items = self._get_project_list(parallel=parallel, max_workers=max_workers)
 		for item in project_items:
 			# Use select_one() with the selector from SELECTORS
 			project_name_div = item.select_one(self.SELECTORS['project_name'])
@@ -88,13 +186,83 @@ class IntraScrape:
 			str: URL of the project or None if not found
 		"""
 		if not self.all_projects:
-			self.get_projects()
+			self.get_all_projects()
 		url = [proj['url'] for proj in self.all_projects if proj['name'].lower() == project_name.lower()]
 		return url[0] if url else None
 
+	def get_remote_modified_time(self, attachment_url: str) -> float:
+		"""
+		Get the last modified timestamp of a remote file without downloading it.
+
+		Args:
+			attachment_url (str): URL of the attachment
+
+		Returns:
+			float: Unix timestamp of last modification, or 0 if not available
+		"""
+		try:
+			response = self.session.head(attachment_url, timeout=10)
+			if response.status_code == 200:
+				last_modified = response.headers.get('Last-Modified')
+				if last_modified:
+					dt = parsedate_to_datetime(last_modified)
+					return dt.timestamp()
+		except Exception:
+			pass
+		return 0
+
+	def get_versioned_filepath(self, attachment_url: str, base_save_path: str) -> tuple[str, bool]:
+		"""
+		Determine the filepath for saving, using remote timestamp in filename.
+
+		Strategy:
+		- If no file exists, use base filename
+		- If base file exists and matches remote timestamp, skip download
+		- If file exists with different timestamp, create versioned filename
+		- Returns the path to use and whether a download should occur
+
+		Args:
+			attachment_url (str): URL of the remote attachment
+			base_save_path (str): Original save path (e.g., "/path/to/file.pdf")
+
+		Returns:
+			tuple[str, bool]: (filepath to save to, whether to download)
+		"""
+		remote_time = self.get_remote_modified_time(attachment_url)
+		if remote_time == 0:
+			# Can't determine remote time, don't download
+			return (base_save_path, False)
+
+		# Parse base path
+		directory = os.path.dirname(base_save_path) or '.'
+		filename = os.path.basename(base_save_path)
+		base_name, ext = os.path.splitext(filename)
+
+		# Format remote timestamp
+		timestamp_str = datetime.fromtimestamp(remote_time).strftime('%Y%m%d_%H%M%S')
+		versioned_filename = f"{base_name}_{timestamp_str}{ext}"
+		versioned_path = os.path.join(directory, versioned_filename)
+
+		# Check if versioned file already exists
+		if os.path.exists(versioned_path):
+			return (versioned_path, False)
+
+		# Check if base file exists
+		if os.path.exists(base_save_path):
+			# Check if base file matches remote timestamp (tolerance of 1 second)
+			local_time = os.path.getmtime(base_save_path)
+			if abs(local_time - remote_time) <= 1:
+				# Base file is same version as remote
+				return (base_save_path, False)
+			# Base file is different version, create versioned file
+			return (versioned_path, True)
+
+		# No files exist yet, use base filename for first download
+		return (base_save_path, True)
+
 	def download_attachment(self, attachment_url: str, save_path: str, show_progress: bool = True):
 		"""
-		Download an attachment with optional progress bar
+		Download an attachment with optional progress bar and set modification time
 
 		Args:
 			attachment_url (str): URL of the attachment to download
@@ -105,8 +273,9 @@ class IntraScrape:
 			if response.status_code != 200:
 				raise Exception(f"Failed to download attachment: {response.status_code}")
 
-			# Get total file size from headers
+			# Get total file size and last modified time from headers
 			total_size = int(response.headers.get('content-length', 0))
+			last_modified = response.headers.get('Last-Modified')
 
 			# Only show progress bar for files larger than 1MB
 			if show_progress and total_size > 1_000_000:
@@ -132,6 +301,15 @@ class IntraScrape:
 
 			if progress_bar:
 				progress_bar.close()
+
+		# Set the file's modification time to match the remote file
+		if last_modified:
+			try:
+				dt = parsedate_to_datetime(last_modified)
+				timestamp = dt.timestamp()
+				os.utime(save_path, (timestamp, timestamp))
+			except Exception:
+				pass
 
 class IntraAPI:
 	def __init__(self, uid, secret):
