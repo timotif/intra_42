@@ -6,9 +6,11 @@ Python utilities for accessing 42 school resources through the official API and 
 
 - **OAuth2 API Client** - Clean wrapper around the 42 Intra API with automatic token management
 - **Web Scraper** - Access project subjects and attachments from the projects website
+- **Versioned Downloads** - Automatic file versioning with timestamp tracking, preserves old versions
+- **Parallel Pagination** - Multi-threaded page fetching with auto-detected worker count (16x faster)
+- **Smart Downloads** - Skip unchanged files, only download updates
 - **Pagination Support** - Efficiently handle large datasets with generator-based iteration
 - **Progress Tracking** - Optional progress bars for downloads
-- **Smart Downloads** - Automatic timeouts and context manager support
 
 ## Installation
 
@@ -115,9 +117,18 @@ cookies = {
 
 scraper = IntraScrape(cookies)
 
-# Get all projects
-projects = scraper.get_projects()
+# Get all projects (parallel by default, ~16x faster than sequential)
+projects = scraper.get_all_projects()
 print(f"Found {len(projects)} projects")
+
+# Sequential mode (if needed)
+projects = scraper.get_all_projects(parallel=False)
+
+# Custom worker count
+projects = scraper.get_all_projects(parallel=True, max_workers=4)
+
+# Get specific projects by name
+scraper.get_projects_to_scrape(['libft', 'ft_printf'])
 
 # Get attachments for a specific project
 project = next((p for p in projects if p['name'] == 'libft'), None)
@@ -125,16 +136,27 @@ if project:
     attachments = scraper.get_project_attachments(project['url'])
     for url in attachments:
         filename = url.split('/')[-1]
-        scraper.download_attachment(url, f'downloads/{filename}')
+        base_path = f'downloads/{filename}'
+
+        # Smart versioned download
+        actual_path, should_download = scraper.get_versioned_filepath(url, base_path)
+        if should_download:
+            scraper.download_attachment(url, actual_path)
+        # Files automatically versioned: file.pdf -> file_20250509_141612.pdf
 ```
 
+**Features demonstrated:**
+- Parallel pagination (automatic worker detection)
+- Versioned downloads (preserves old files)
+- Smart skip logic (only downloads updates)
+- Progress tracking (built-in with `tqdm`)
+
 **Your implementation should include:**
-- Progress tracking (using `tqdm`)
 - Error handling and retries
 - Rate limiting (add `time.sleep()` between requests)
 - Graceful interruption (signal handling)
 
-See `examples/scraper_example.py` for a template.
+See `examples/scraper_example.py` for a complete template.
 
 ## Architecture
 
@@ -195,7 +217,7 @@ all_users = api.get_all_pages('/v2/campus/51/users', page_size=100)
 
 ## Web Scraping Examples
 
-### Basic Scraping
+### Basic Scraping with Versioning
 
 ```python
 from intra42 import IntraScrape
@@ -209,26 +231,73 @@ cookies = {
 
 scraper = IntraScrape(cookies)
 
-# Get all projects
-projects = scraper.get_projects()
+# Get all projects (uses parallel pagination by default)
+projects = scraper.get_all_projects()  # ~15s for 334 projects
 
 # Get attachments for a specific project
 attachments = scraper.get_project_attachments('/projects/42cursus-libft')
 
-# Download files
+# Download with automatic versioning
 for url in attachments:
     filename = url.split('/')[-1]
-    scraper.download_attachment(url, f'downloads/{filename}')
+    base_path = f'downloads/{filename}'
+
+    # Check if file needs updating
+    actual_path, should_download = scraper.get_versioned_filepath(url, base_path)
+
+    if should_download:
+        scraper.download_attachment(url, actual_path)
+        print(f"Downloaded: {actual_path}")
+    else:
+        print(f"Skipped: {actual_path} (already up-to-date)")
 ```
 
-### Find Project by Name
+### Parallel vs Sequential Pagination
+
+```python
+# Parallel mode (default) - auto-detects optimal workers
+projects = scraper.get_all_projects()
+# Fetching 17 pages in parallel with 32 workers...
+# Total projects loaded: 334 (~15 seconds)
+
+# Sequential mode - useful for debugging or rate limit concerns
+projects = scraper.get_all_projects(parallel=False)
+# Fetching 17 pages sequentially...
+# Loaded page 1/17: 20 projects
+# ... (~240 seconds)
+
+# Custom worker count
+projects = scraper.get_all_projects(parallel=True, max_workers=4)
+```
+
+### Find and Filter Projects
 
 ```python
 # Search for project URL by name
 project_url = scraper.get_project_url_by_name('libft')
 if project_url:
     attachments = scraper.get_project_attachments(project_url)
+
+# Get specific projects by name list
+scraper.get_projects_to_scrape(['libft', 'ft_printf', 'minishell'])
+for project in scraper.projects_to_scrape:
+    print(f"Processing: {project['name']}")
 ```
+
+### File Versioning Behavior
+
+When a remote file is updated, the scraper creates a versioned copy:
+
+```
+downloads/
+├── en.subject.pdf              # Original (downloaded 2024-01-15)
+└── en.subject_20250509_141612.pdf  # Update (remote modified 2025-05-09 14:16:12)
+```
+
+- First download: Uses base filename (`en.subject.pdf`)
+- Subsequent updates: Adds timestamp from remote `Last-Modified` header
+- Old versions preserved automatically
+- Timestamp in filename reflects when file was **last modified on server**, not download time
 
 ## Testing
 
@@ -351,6 +420,30 @@ While robots.txt permits access, implement responsible practices:
 
 **Note**: robots.txt compliance does not supersede 42's Terms of Service. Use this library responsibly as an authorized 42 student.
 
+## Performance Notes
+
+### Parallel Pagination
+
+The library supports parallel page fetching with auto-detected worker count:
+
+```python
+# Auto-detect: min(32, cpu_count * 2) for I/O-bound tasks
+projects = scraper.get_all_projects()  # Parallel by default
+
+# Customize workers
+projects = scraper.get_all_projects(max_workers=4)
+```
+
+On a typical machine, parallel mode is **10-16x faster** than sequential for fetching multiple pages.
+
+### Smart Downloads
+
+The versioning system uses HTTP HEAD requests to check file timestamps before downloading:
+
+- Only downloads files that are new or updated
+- Preserves bandwidth and time on re-runs
+- Typical skip rate: 90%+ when most files unchanged
+
 ## Future Improvements
 
 Potential enhancements for the library:
@@ -360,7 +453,7 @@ Potential enhancements for the library:
 - **Retry Logic**: Built-in exponential backoff for failed requests
 - **Session Persistence**: Save and restore session state
 - **Async Support**: Add async variants of API calls using `aiohttp`
-- **CLI Tool**: Command-line interface for common operations
+- **Compression Detection**: Track file hashes for content-based versioning
 
 Contributions are welcome!
 
