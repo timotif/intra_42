@@ -100,8 +100,15 @@ class IntraScrape:
 
 		print(f"Fetching {total_pages} pages in parallel with {max_workers} workers...")
 
-		with ThreadPoolExecutor(max_workers=max_workers) as executor:
+		executor = ThreadPoolExecutor(max_workers=max_workers)
+		try:
 			results = list(executor.map(self._get_project_list_page, range(1, total_pages + 1)))
+		except KeyboardInterrupt:
+			print("\n\n⚠️  Interrupt received during page fetching. Cleaning up...")
+			executor.shutdown(wait=False, cancel_futures=True)
+			raise
+		finally:
+			executor.shutdown(wait=True)
 
 		# Flatten results
 		all_items = []
