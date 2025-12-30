@@ -179,7 +179,7 @@ class IntraScrape:
 		# Use select() to find all matching elements
 		attachments_div = soup.select(self.SELECTORS['attachment_name'])
 		if not attachments_div:
-			print("No attachments found for this project.")
+			tqdm.write(f"No attachments found for project: {project_url}")
 			return []
 		links = [att.find('a')['href'] for att in attachments_div if att.find('a')]
 		return links
