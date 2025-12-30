@@ -212,8 +212,9 @@ class TestIntraScrape:
 
         scraper = IntraScrape({})
 
-        with pytest.raises(Exception, match='Projects list not found'):
-            scraper._get_project_list()
+        # Should return empty list when no projects found, not raise exception
+        results = scraper._get_project_list_page(1)
+        assert results == []
 
     @patch('intra42.requests.Session.get')
     def test_get_projects(self, mock_get):
@@ -395,6 +396,222 @@ class TestIntraScrape:
         # Verify progress bar was created for large file
         mock_tqdm.assert_called_once()
         assert mock_tqdm.call_args.kwargs['total'] == 5000000
+
+    @patch('intra42.requests.Session')
+    def test_get_remote_modified_time_success(self, mock_session_class):
+        """Test getting remote file modification time via HEAD request"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers.get.return_value = 'Fri, 09 May 2025 12:16:12 GMT'
+        mock_session.head.return_value = mock_response
+
+        scraper = IntraScrape({})
+        timestamp = scraper.get_remote_modified_time('http://example.com/file.pdf')
+
+        assert timestamp == 1746792972.0  # Unix timestamp for that date
+        mock_session.head.assert_called_once_with('http://example.com/file.pdf', timeout=10)
+
+    @patch('intra42.requests.Session')
+    def test_get_remote_modified_time_no_header(self, mock_session_class):
+        """Test getting remote modified time when header is missing"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers.get.return_value = None
+        mock_session.head.return_value = mock_response
+
+        scraper = IntraScrape({})
+        timestamp = scraper.get_remote_modified_time('http://example.com/file.pdf')
+
+        assert timestamp == 0  # Returns 0 when header unavailable
+
+    @patch('intra42.requests.Session')
+    @patch('intra42.os.path.exists')
+    @patch('intra42.os.path.getmtime')
+    def test_get_versioned_filepath_no_file(self, mock_getmtime, mock_exists, mock_session_class):
+        """Test versioned filepath when file doesn't exist"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers.get.return_value = 'Fri, 09 May 2025 12:16:12 GMT'
+        mock_session.head.return_value = mock_response
+
+        mock_exists.return_value = False
+
+        scraper = IntraScrape({})
+        path, should_download = scraper.get_versioned_filepath(
+            'http://example.com/file.pdf',
+            '/downloads/file.pdf'
+        )
+
+        assert path == '/downloads/file.pdf'  # Use base filename
+        assert should_download == True
+
+    @patch('intra42.requests.Session')
+    @patch('intra42.os.path.exists')
+    @patch('intra42.os.path.getmtime')
+    def test_get_versioned_filepath_file_exists_same_version(self, mock_getmtime, mock_exists, mock_session_class):
+        """Test versioned filepath when file exists and is up-to-date"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers.get.return_value = 'Fri, 09 May 2025 12:16:12 GMT'
+        mock_session.head.return_value = mock_response
+
+        def exists_side_effect(path):
+            # Versioned file doesn't exist, but base file does
+            if path == '/downloads/file_20250509_141612.pdf':
+                return False
+            if path == '/downloads/file.pdf':
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+        mock_getmtime.return_value = 1746792972.0  # Same timestamp
+
+        scraper = IntraScrape({})
+        path, should_download = scraper.get_versioned_filepath(
+            'http://example.com/file.pdf',
+            '/downloads/file.pdf'
+        )
+
+        assert path == '/downloads/file.pdf'
+        assert should_download == False  # Already up-to-date
+
+    @patch('intra42.requests.Session')
+    @patch('intra42.os.path.exists')
+    @patch('intra42.os.path.getmtime')
+    def test_get_versioned_filepath_file_exists_newer_version(self, mock_getmtime, mock_exists, mock_session_class):
+        """Test versioned filepath when remote file is newer"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers.get.return_value = 'Fri, 09 May 2025 12:16:12 GMT'
+        mock_session.head.return_value = mock_response
+
+        def exists_side_effect(path):
+            # Base file exists, versioned doesn't
+            if path == '/downloads/file.pdf':
+                return True
+            return False
+
+        mock_exists.side_effect = exists_side_effect
+        mock_getmtime.return_value = 1000000000.0  # Much older timestamp
+
+        scraper = IntraScrape({})
+        path, should_download = scraper.get_versioned_filepath(
+            'http://example.com/file.pdf',
+            '/downloads/file.pdf'
+        )
+
+        assert path == '/downloads/file_20250509_141612.pdf'  # Versioned filename
+        assert should_download == True
+
+    @patch('intra42.requests.Session')
+    def test_get_total_pages(self, mock_session_class):
+        """Test extracting total page count from pagination"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.text = '''
+            <div id="projects-list-container">
+                <div>
+                    <ul>
+                        <li class="last">
+                            <a href="/projects/list?page=17">Last</a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+        '''
+        mock_session.get.return_value = mock_response
+
+        scraper = IntraScrape({})
+        total_pages = scraper._get_total_pages()
+
+        assert total_pages == 17
+
+    @patch('intra42.requests.Session')
+    @patch('intra42.IntraScrape._get_total_pages')
+    @patch('intra42.IntraScrape._get_project_list_page')
+    def test_parallel_pagination(self, mock_get_page, mock_get_total, mock_session_class):
+        """Test parallel pagination fetches all pages"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_get_total.return_value = 3
+
+        # Mock different responses for each page
+        from bs4 import BeautifulSoup
+        def get_page_side_effect(page):
+            html = f'<li class="project-item"><div class="project-name"><a href="/p{page}">Project{page}</a></div></li>'
+            soup = BeautifulSoup(html, 'html.parser')
+            return [soup.find('li')]
+
+        mock_get_page.side_effect = get_page_side_effect
+
+        scraper = IntraScrape({})
+        results = scraper._get_project_list(parallel=True, max_workers=2)
+
+        assert len(results) == 3
+        assert mock_get_page.call_count == 3
+
+    @patch('intra42.requests.Session')
+    @patch('intra42.IntraScrape._get_total_pages')
+    @patch('intra42.IntraScrape._get_project_list_page')
+    def test_sequential_pagination(self, mock_get_page, mock_get_total, mock_session_class):
+        """Test sequential pagination fetches all pages"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        mock_get_total.return_value = 2
+
+        from bs4 import BeautifulSoup
+        def get_page_side_effect(page):
+            html = f'<li class="project-item"><div class="project-name"><a href="/p{page}">Project{page}</a></div></li>'
+            soup = BeautifulSoup(html, 'html.parser')
+            return [soup.find('li')]
+
+        mock_get_page.side_effect = get_page_side_effect
+
+        scraper = IntraScrape({})
+        results = scraper._get_project_list(parallel=False)
+
+        assert len(results) == 2
+        assert mock_get_page.call_count == 2
+
+    @patch('intra42.requests.Session')
+    def test_get_projects_to_scrape(self, mock_session_class):
+        """Test filtering projects by name"""
+        mock_session = Mock()
+        mock_session_class.return_value = mock_session
+
+        scraper = IntraScrape({})
+        # Set all_projects directly instead of mocking get_all_projects
+        scraper.all_projects = [
+            {'name': 'libft', 'url': '/projects/libft'},
+            {'name': 'ft_printf', 'url': '/projects/ft_printf'},
+            {'name': 'minishell', 'url': '/projects/minishell'}
+        ]
+
+        scraper.get_projects_to_scrape(['libft', 'minishell'])
+
+        assert len(scraper.projects_to_scrape) == 2
+        assert scraper.projects_to_scrape[0]['name'] == 'libft'
+        assert scraper.projects_to_scrape[1]['name'] == 'minishell'
 
 
 if __name__ == '__main__':
