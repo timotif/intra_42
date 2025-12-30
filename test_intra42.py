@@ -239,7 +239,7 @@ class TestIntraScrape:
         mock_get.return_value = mock_response
 
         scraper = IntraScrape({})
-        projects = scraper.get_projects()
+        projects = scraper.get_all_projects()
 
         assert len(projects) == 2
         assert projects[0] == {'name': 'Libft', 'url': '/projects/libft'}

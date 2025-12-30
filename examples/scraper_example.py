@@ -42,7 +42,7 @@ def scrape_single_project(project_name: str):
     scraper = IntraScrape(get_cookies())
 
     # Get all projects
-    projects = scraper.get_projects()
+    projects = scraper.get_all_projects()
 
     # Find the specific project
     # TODO: Add your own search/filter logic
